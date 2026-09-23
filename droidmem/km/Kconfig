@@ -1,0 +1,7 @@
+config DROIDMEM
+    tristate "DroidMem Driver"
+    default y
+    help
+    This is the droidmem driver for android system.
+    Provides process memory read/write via physical page table walking.
+    Compatible with kernel 3.x through 6.x.

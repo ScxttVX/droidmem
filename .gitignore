@@ -1,0 +1,33 @@
+# Compiled binaries
+*.o
+*.ko
+*.cmd
+*.order
+*.mod
+*.mod.c
+*.symvers
+
+# Binários compilados
+main
+main32
+main64
+test_proc
+
+# Build artifacts
+.cache/
+.tmp_versions/
+Module.symvers
+
+# Temp files
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-*

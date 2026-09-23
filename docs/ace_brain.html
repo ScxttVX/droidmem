@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>droidmem — Mapa ACE Brain</title>
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a0a;
+            font-family: 'Segoe UI', sans-serif;
+            color: #e0e0e0;
+            overflow: hidden;
+        }
+        #header {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            z-index: 10;
+            background: linear-gradient(180deg, rgba(10,10,10,0.95) 0%, rgba(10,10,10,0) 100%);
+            padding: 16px 24px 40px;
+            text-align: center;
+        }
+        #header h1 {
+            font-size: 22px;
+            font-weight: 700;
+            background: linear-gradient(90deg, #ff4444, #ff8800, #44ff44);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        #header p {
+            font-size: 12px;
+            color: #888;
+            margin-top: 4px;
+        }
+        #network {
+            width: 100vw;
+            height: 100vh;
+        }
+        #legend {
+            position: fixed;
+            bottom: 16px; left: 16px;
+            background: rgba(20,20,20,0.9);
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 12px 16px;
+            z-index: 10;
+            font-size: 12px;
+        }
+        #legend div {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+        #legend div:last-child { margin-bottom: 0; }
+        .dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        #info {
+            position: fixed;
+            top: 16px; right: 16px;
+            background: rgba(20,20,20,0.9);
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 14px 18px;
+            z-index: 10;
+            max-width: 320px;
+            font-size: 13px;
+            line-height: 1.5;
+            display: none;
+        }
+        #info h3 {
+            font-size: 15px;
+            margin-bottom: 6px;
+        }
+        #info .close {
+            position: absolute;
+            top: 8px; right: 12px;
+            cursor: pointer;
+            color: #888;
+            font-size: 18px;
+        }
+        #info .close:hover { color: #fff; }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h1>🧠 droidmem — Mapa ACE Brain</h1>
+        <p>Clique em qualquer nó para ver detalhes • Arraste para mover • Scroll para zoom</p>
+    </div>
+
+    <div id="network"></div>
+
+    <div id="legend">
+        <div><span class="dot" style="background:#ff4444"></span> ACE — Vetor de Detecção</div>
+        <div><span class="dot" style="background:#44bb44"></span> Bypass — Abordagem de Contorno</div>
+        <div><span class="dot" style="background:#4488ff"></span> Core — Componente droidmem</div>
+        <div><span class="dot" style="background:#ffaa00"></span> Resultado</div>
+    </div>
+
+    <div id="info">
+        <span class="close" onclick="document.getElementById('info').style.display='none'">&times;</span>
+        <h3 id="info-title"></h3>
+        <p id="info-text"></p>
+    </div>
+
+    <script>
+    const details = {
+        "ACE Engine": "O Anti-Cheat Engine (ACE) do FreeFire monitora o sistema em múltiplas camadas, desde userspace até kernel, para detectar manipulação de memória.",
+        "ptrace monitor": "Verifica /proc/<pid>/status para TracerPid. Se != 0, processo está sendo debugado. Checa a cada ~500ms.",
+        "/proc/pid/mem monitor": "Intercepta syscalls openat() para detectar quem abre /proc/<pid>/mem. Processo externo com fd = suspeito.",
+        "maps monitor": "Detecta leitura de /proc/<pid>/maps por processos externos. Compara módulos carregados.",
+        "Root detection": "Procura su binary, Magisk, SuperSU, KernelSU. Verifica props do sistema e dm-verity.",
+        "Emulator detection": "Detecta /dev/goldfish_pipe, /dev/qemu_pipe, build fingerprint genérico, BlueStacks artifacts.",
+        "Integrity checks": "CRC32/MD5 de memória em runtime. Compara hashes de .so com valores originais. Scan periódico.",
+        "eBPF/kprobe": "Usa eBPF programs em tracepoints e kretprobes em syscalls (open, read, mmap) para monitorar comportamento.",
+        "Binder monitor": "Intercepta comunicação IPC via /dev/binder. Detecta transações anômalas entre processos.",
+        "Binary signature": "Verifica hash do binário (.so), assinatura digital, tamanho e strings conhecidas de cheat tools.",
+        "Module hiding": "Remove módulo da lista em /proc/modules via list_del_init(). Oculta kobject para lsmod não mostrar.",
+        "Syscall hooking": "Hook em __x64_sys_openat para filtrar acessos a /proc/pid/mem, /proc/pid/maps, /dev/goldfish_pipe.",
+        "ptrace spoof": "Hook em read() de /proc/<pid>/status retorna TracerPid = 0 mesmo com ptrace ativo.",
+        "VMA enum": "Usa for_each_vma() no kernel para enumerar módulos sem abrir /proc/pid/maps.",
+        "ioremap direto": "page table walking + ioremap_cache mapeia memória física. Não passa pelo VFS, invisível para ACE.",
+        "Magisk DenyList": "Oculta root do processo alvo. ACE não detecta /system/bin/su no processo.",
+        "Module hiding+": "Versão avançada: oculta de /proc/modules, kallsyms, lsmod e /sys/module/.",
+        "Hook openat": "Intercepta openat() para bloquear /dev/goldfish*, /proc/*/status, /proc/*/maps para processos externos.",
+        "droidmem core": "O driver droidmem opera em dois modos: kernel module (ioctl + page table walking) ou fallback /proc/pid/mem (ptrace).",
+        "Kernel module (.ko)": "Módulo kernel que registra /dev/droidmem. Usa page table walking para acesso físico via ioremap_cache.",
+        "Proc mem fallback": "Quando .ko não disponível, usa ptrace + /proc/pid/mem + /proc/pid/maps. Funciona em qualquer root.",
+        "Page table walking": "Traduz endereço virtual → físico: PGD → P4D → PUD → PMD → PTE. Suporta kernels 3.x a 6.x.",
+        "ACE BYPASS": "Se o kernel module estiver completo (module hiding + syscall hooking + ptrace spoof), o ACE perde 80%+ dos vetores de detecção.",
+        "ACE detecta": "Sem bypass, o ACE detecta ptrace, /proc/pid/mem, maps read, root e emulator em segundos."
+    };
+
+    const nodes = [
+        { id: "ace", label: "🛡️ ACE\nEngine", color: {background:"#cc2222", border:"#ff4444", highlight:{background:"#dd3333",border:"#ff6666"}},
+          font: {color:"#fff", size:14, face:"Segoe UI"}, size: 45, shape: "box",
+          borderWidth: 2, shadow: {enabled:true, color:"rgba(255,50,50,0.3)", size:15} },
+
+        { id: "ptrace", label: "ptrace\nmonitor", color: {background:"#881111", border:"#ff4444"},
+          font: {color:"#ffaaaa", size:11}, size: 28, shape: "ellipse", borderWidth: 2 },
+        { id: "mem", label: "/proc/pid/mem\nmonitor", color: {background:"#881111", border:"#ff4444"},
+          font: {color:"#ffaaaa", size:11}, size: 28, shape: "ellipse", borderWidth: 2 },
+        { id: "maps", label: "maps\nmonitor", color: {background:"#881111", border:"#ff4444"},
+          font: {color:"#ffaaaa", size:11}, size: 28, shape: "ellipse", borderWidth: 2 },
+        { id: "root", label: "Root\ndetection", color: {background:"#881111", border:"#ff4444"},
+          font: {color:"#ffaaaa", size:11}, size: 28, shape: "ellipse", borderWidth: 2 },
+        { id: "emu", label: "Emulator\ndetection", color: {background:"#881111", border:"#ff4444"},
+          font: {color:"#ffaaaa", size:11}, size: 28, shape: "ellipse", borderWidth: 2 },
+        { id: "integrity", label: "Integrity\nchecks", color: {background:"#881111", border:"#ff4444"},
+          font: {color:"#ffaaaa", size:11}, size: 28, shape: "ellipse", borderWidth: 2 },
+        { id: "ebpf", label: "eBPF /\nkprobe", color: {background:"#881111", border:"#ff4444"},
+          font: {color:"#ffaaaa", size:11}, size: 28, shape: "ellipse", borderWidth: 2 },
+        { id: "binder", label: "Binder\nmonitor", color: {background:"#881111", border:"#ff4444"},
+          font: {color:"#ffaaaa", size:11}, size: 28, shape: "ellipse", borderWidth: 2 },
+        { id: "binary", label: "Binary\nsignature", color: {background:"#881111", border:"#ff4444"},
+          font: {color:"#ffaaaa", size:11}, size: 28, shape: "ellipse", borderWidth: 2 },
+
+        { id: "mh", label: "Module\nhiding", color: {background:"#116611", border:"#44bb44"},
+          font: {color:"#aaffaa", size:11}, size: 26, shape: "box", borderWidth: 2 },
+        { id: "sycall", label: "Syscall\nhooking", color: {background:"#116611", border:"#44bb44"},
+          font: {color:"#aaffaa", size:11}, size: 26, shape: "box", borderWidth: 2 },
+        { id: "spoof", label: "ptrace\nspoof", color: {background:"#116611", border:"#44bb44"},
+          font: {color:"#aaffaa", size:11}, size: 26, shape: "box", borderWidth: 2 },
+        { id: "vma", label: "VMA\nenum", color: {background:"#116611", border:"#44bb44"},
+          font: {color:"#aaffaa", size:11}, size: 26, shape: "box", borderWidth: 2 },
+        { id: "ioremap", label: "ioremap\ndireto", color: {background:"#116611", border:"#44bb44"},
+          font: {color:"#aaffaa", size:11}, size: 26, shape: "box", borderWidth: 2 },
+        { id: "denylist", label: "Magisk\nDenyList", color: {background:"#116611", border:"#44bb44"},
+          font: {color:"#aaffaa", size:11}, size: 26, shape: "box", borderWidth: 2 },
+        { id: "hookopen", label: "Hook\nopenat", color: {background:"#116611", border:"#44bb44"},
+          font: {color:"#aaffaa", size:11}, size: 26, shape: "box", borderWidth: 2 },
+        { id: "mhplus", label: "Module\nhiding+", color: {background:"#116611", border:"#44bb44"},
+          font: {color:"#aaffaa", size:11}, size: 26, shape: "box", borderWidth: 2 },
+
+        { id: "core", label: "⚙️ droidmem\ncore", color: {background:"#113366", border:"#4488ff"},
+          font: {color:"#aaccff", size:13, face:"Segoe UI"}, size: 40, shape: "box",
+          borderWidth: 2, shadow: {enabled:true, color:"rgba(50,100,255,0.3)", size:15} },
+        { id: "ko", label: "Kernel\nmodule (.ko)", color: {background:"#113366", border:"#4488ff"},
+          font: {color:"#aaccff", size:11}, size: 30, shape: "box", borderWidth: 2 },
+        { id: "proc", label: "Proc mem\nfallback", color: {background:"#113366", border:"#4488ff"},
+          font: {color:"#aaccff", size:11}, size: 30, shape: "box", borderWidth: 2 },
+        { id: "ptw", label: "Page table\nwalking", color: {background:"#113366", border:"#4488ff"},
+          font: {color:"#aaccff", size:11}, size: 28, shape: "ellipse", borderWidth: 2 },
+
+        { id: "bypass", label: "✅ ACE\nBYPASS", color: {background:"#664400", border:"#ffaa00"},
+          font: {color:"#ffdd66", size:14, face:"Segoe UI"}, size: 42, shape: "diamond",
+          borderWidth: 2, shadow: {enabled:true, color:"rgba(255,170,0,0.3)", size:15} },
+        { id: "detect", label: "❌ ACE\nDETECTA", color: {background:"#660000", border:"#ff2222"},
+          font: {color:"#ff8888", size:14, face:"Segoe UI"}, size: 42, shape: "diamond",
+          borderWidth: 2, shadow: {enabled:true, color:"rgba(255,50,50,0.3)", size:15} },
+    ];
+
+    const edges = [
+        { from: "ace", to: "ptrace", color: {color:"#ff4444", opacity:0.6}, width: 2 },
+        { from: "ace", to: "mem", color: {color:"#ff4444", opacity:0.6}, width: 2 },
+        { from: "ace", to: "maps", color: {color:"#ff4444", opacity:0.6}, width: 2 },
+        { from: "ace", to: "root", color: {color:"#ff4444", opacity:0.6}, width: 2 },
+        { from: "ace", to: "emu", color: {color:"#ff4444", opacity:0.6}, width: 2 },
+        { from: "ace", to: "integrity", color: {color:"#ff4444", opacity:0.6}, width: 2 },
+        { from: "ace", to: "ebpf", color: {color:"#ff4444", opacity:0.6}, width: 2 },
+        { from: "ace", to: "binder", color: {color:"#ff4444", opacity:0.6}, width: 2 },
+        { from: "ace", to: "binary", color: {color:"#ff4444", opacity:0.6}, width: 2 },
+
+        { from: "ptrace", to: "detect", color: {color:"#ff3333", opacity:0.4}, dashes:true, width:1 },
+        { from: "mem", to: "detect", color: {color:"#ff3333", opacity:0.4}, dashes:true, width:1 },
+        { from: "maps", to: "detect", color: {color:"#ff3333", opacity:0.4}, dashes:true, width:1 },
+        { from: "root", to: "detect", color: {color:"#ff3333", opacity:0.4}, dashes:true, width:1 },
+        { from: "ebpf", to: "detect", color: {color:"#ff3333", opacity:0.4}, dashes:true, width:1 },
+
+        { from: "spoof", to: "ptrace", color: {color:"#44bb44"}, width: 2, dashes:[5,5],
+          label: "bloqueia", font: {color:"#44bb44", size:9} },
+        { from: "ioremap", to: "mem", color: {color:"#44bb44"}, width: 2, dashes:[5,5],
+          label: "ignora VFS", font: {color:"#44bb44", size:9} },
+        { from: "vma", to: "maps", color: {color:"#44bb44"}, width: 2, dashes:[5,5],
+          label: "substitui", font: {color:"#44bb44", size:9} },
+        { from: "denylist", to: "root", color: {color:"#44bb44"}, width: 2, dashes:[5,5],
+          label: "oculta root", font: {color:"#44bb44", size:9} },
+        { from: "sycall", to: "emu", color: {color:"#44bb44"}, width: 2, dashes:[5,5],
+          label: "hook openat", font: {color:"#44bb44", size:9} },
+        { from: "mhplus", to: "ebpf", color: {color:"#44bb44"}, width: 2, dashes:[5,5],
+          label: "remove kprobe", font: {color:"#44bb44", size:9} },
+        { from: "hookopen", to: "binary", color: {color:"#44bb44"}, width: 2, dashes:[5,5],
+          label: "filtra", font: {color:"#44bb44", size:9} },
+        { from: "mh", to: "binary", color: {color:"#44bb44"}, width: 1, dashes:[3,3] },
+
+        { from: "core", to: "ko", color: {color:"#4488ff", opacity:0.6}, width: 2 },
+        { from: "core", to: "proc", color: {color:"#4488ff", opacity:0.6}, width: 2 },
+        { from: "ko", to: "ptw", color: {color:"#4488ff", opacity:0.5}, width: 1.5 },
+
+        { from: "ko", to: "mh", color: {color:"#33aa33"}, width: 1.5 },
+        { from: "ko", to: "sycall", color: {color:"#33aa33"}, width: 1.5 },
+        { from: "ko", to: "spoof", color: {color:"#33aa33"}, width: 1.5 },
+        { from: "ko", to: "vma", color: {color:"#33aa33"}, width: 1.5 },
+        { from: "ko", to: "ioremap", color: {color:"#33aa33"}, width: 1.5 },
+        { from: "ko", to: "mhplus", color: {color:"#33aa33"}, width: 1.5 },
+        { from: "ko", to: "hookopen", color: {color:"#33aa33"}, width: 1.5 },
+
+        { from: "proc", to: "ptrace", color: {color:"#888", opacity:0.3}, width: 1, dashes:[2,2] },
+        { from: "proc", to: "mem", color: {color:"#888", opacity:0.3}, width: 1, dashes:[2,2] },
+
+        { from: "mh", to: "bypass", color: {color:"#ffaa00", opacity:0.5}, width: 1.5 },
+        { from: "sycall", to: "bypass", color: {color:"#ffaa00", opacity:0.5}, width: 1.5 },
+        { from: "spoof", to: "bypass", color: {color:"#ffaa00", opacity:0.5}, width: 1.5 },
+        { from: "vma", to: "bypass", color: {color:"#ffaa00", opacity:0.5}, width: 1.5 },
+        { from: "ioremap", to: "bypass", color: {color:"#ffaa00", opacity:0.5}, width: 1.5 },
+        { from: "mhplus", to: "bypass", color: {color:"#ffaa00", opacity:0.5}, width: 1.5 },
+        { from: "denylist", to: "bypass", color: {color:"#ffaa00", opacity:0.5}, width: 1.5 },
+        { from: "hookopen", to: "bypass", color: {color:"#ffaa00", opacity:0.5}, width: 1.5 },
+    ];
+
+    const container = document.getElementById('network');
+    const data = { nodes: nodes, edges: edges };
+    const options = {
+        physics: {
+            enabled: true,
+            solver: "forceAtlas2Based",
+            forceAtlas2Based: {
+                gravitationalConstant: -80,
+                centralGravity: 0.01,
+                springLength: 150,
+                springConstant: 0.06,
+                damping: 0.4
+            },
+            stabilization: { iterations: 200 }
+        },
+        interaction: {
+            hover: true,
+            tooltipDelay: 100,
+            zoomView: true,
+            dragView: true
+        },
+        edges: {
+            smooth: { type: "continuous" }
+        }
+    };
+
+    const network = new vis.Network(container, data, options);
+
+    network.on("click", function(params) {
+        if (params.nodes.length > 0) {
+            const nodeId = params.nodes[0];
+            const node = nodes.find(n => n.id === nodeId);
+            const info = details[node.label.replace(/\n/g, " ")];
+            if (info) {
+                document.getElementById('info-title').textContent = node.label.replace(/\n/g, " ");
+                document.getElementById('info-text').textContent = info;
+                document.getElementById('info').style.display = 'block';
+            }
+        }
+    });
+
+    network.on("doubleClick", function(params) {
+        if (params.nodes.length > 0) {
+            const nodeId = params.nodes[0];
+            network.focus(nodeId, { scale: 1.5, animation: true });
+        }
+    });
+    </script>
+</body>
+</html>
